@@ -53,7 +53,14 @@ func InitContainerdWorker() {
 				containerd:  "containerd",
 				uid:         uid,
 				gid:         gid,
-				snapshotter: "native", // TODO: test with fuse-overlayfs as well, or automatically determine snapshotter
+				snapshotter: "native",
+			})
+			Register(&containerd{
+				name:        "containerd-rootless-snapshotter-fuse-overlayfs",
+				containerd:  "containerd",
+				uid:         uid,
+				gid:         gid,
+				snapshotter: "fuse-overlayfs",
 			})
 		}
 	}
@@ -125,6 +132,16 @@ func (c *containerd) New(ctx context.Context, cfg *BackendConfig) (b Backend, cl
 
 	deferF.append(func() error { return os.RemoveAll(tmpdir) })
 
+	// Run rootlesskit if rootless mode
+	rootlessKitState := ""
+	if rootless {
+		rootlessKitState, err = c.runRootlesskit(tmpdir, cfg, deferF)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+
+	// Generate containerd config file
 	address := filepath.Join(tmpdir, "containerd.sock")
 	config := fmt.Sprintf(`root = %q
 state = %q
@@ -144,52 +161,27 @@ disabled_plugins = ["cri"]
 	if c.snapshotter != "" {
 		snBuildkitdArgs = append(snBuildkitdArgs,
 			fmt.Sprintf("--containerd-worker-snapshotter=%s", c.snapshotter))
-		if c.snapshotter == "stargz" {
-			snPath, snCl, err := runStargzSnapshotter(cfg)
-			if err != nil {
-				return nil, nil, err
-			}
-			deferF.append(snCl)
-			config = fmt.Sprintf(`%s
 
-[proxy_plugins]
-  [proxy_plugins.stargz]
-    type = "snapshot"
-    address = %q
-`, config, snPath)
+		// Start snapshotter plugin
+		if err := c.runSnapshotterPlugin(&config, cfg, rootlessKitState, deferF); err != nil {
+			return nil, nil, err
 		}
+	} else if rootless {
+		snBuildkitdArgs = append(snBuildkitdArgs, "--containerd-worker-snapshotter=native")
 	}
 
+	// Write containerd config file
 	configFile := filepath.Join(tmpdir, "config.toml")
 	if err := os.WriteFile(configFile, []byte(config), 0644); err != nil {
 		return nil, nil, err
 	}
 
+	// Start containerd
 	containerdArgs := []string{c.containerd, "--config", configFile}
-	rootlessKitState := filepath.Join(tmpdir, "rootlesskit-containerd")
-	if rootless {
-		containerdArgs = append(append([]string{"sudo", "-u", fmt.Sprintf("#%d", c.uid), "-i",
-			fmt.Sprintf("CONTAINERD_ROOTLESS_ROOTLESSKIT_STATE_DIR=%s", rootlessKitState),
-			// Integration test requires the access to localhost of the host network namespace.
-			// TODO: remove these configurations
-			"CONTAINERD_ROOTLESS_ROOTLESSKIT_NET=host",
-			"CONTAINERD_ROOTLESS_ROOTLESSKIT_PORT_DRIVER=none",
-			"CONTAINERD_ROOTLESS_ROOTLESSKIT_FLAGS=--mtu=0",
-		}, c.extraEnv...), "containerd-rootless.sh", "-c", configFile)
-	}
-
-	cmd := exec.Command(containerdArgs[0], containerdArgs[1:]...) //nolint:gosec // test utility
-	cmd.Env = append(os.Environ(), c.extraEnv...)
-
-	ctdStop, err := startCmd(cmd, cfg.Logs)
+	err = c.runContainerdProcess(cfg, rootlessKitState, containerdArgs, address, c.extraEnv, deferF)
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := waitUnix(address, 10*time.Second, cmd); err != nil {
-		ctdStop()
-		return nil, nil, errors.Wrapf(err, "containerd did not start up: %s", formatLogs(cfg.Logs))
-	}
-	deferF.append(ctdStop)
 
 	buildkitdArgs := append([]string{"buildkitd",
 		"--oci-worker=false",
@@ -203,17 +195,10 @@ disabled_plugins = ["cri"]
 		c.extraEnv = append(c.extraEnv, "BUILDKIT_DEBUG_FORCE_OVERLAY_DIFF=true")
 	}
 	if rootless {
-		pidStr, err := os.ReadFile(filepath.Join(rootlessKitState, "child_pid"))
+		buildkitdArgs, err = addRootlessArgs(buildkitdArgs, c.uid, rootlessKitState)
 		if err != nil {
 			return nil, nil, err
 		}
-		pid, err := strconv.ParseInt(string(pidStr), 10, 64)
-		if err != nil {
-			return nil, nil, err
-		}
-		buildkitdArgs = append([]string{"sudo", "-u", fmt.Sprintf("#%d", c.uid), "-i", "--", "exec",
-			"nsenter", "-U", "--preserve-credentials", "-m", "-t", fmt.Sprintf("%d", pid)},
-			append(buildkitdArgs, "--containerd-worker-snapshotter=native")...)
 	}
 	buildkitdSock, stop, err := runBuildkitd(ctx, cfg, buildkitdArgs, cfg.Logs, c.uid, c.gid, c.extraEnv)
 	if err != nil {
@@ -230,6 +215,94 @@ disabled_plugins = ["cri"]
 	}, cl, nil
 }
 
+func (c *containerd) runRootlesskit(tmpdir string, cfg *BackendConfig, deferF *multiCloser) (string, error) {
+	rootlessKitState := filepath.Join(tmpdir, "rootlesskit-containerd")
+	args := append(append([]string{"sudo", "-u", fmt.Sprintf("#%d", c.uid), "-i"}, c.extraEnv...),
+		"rootlesskit",
+		fmt.Sprintf("--state-dir=%s", rootlessKitState),
+		// Integration test requires the access to localhost of the host network namespace.
+		// TODO: remove these configurations
+		"--net=host",
+		"--disable-host-loopback",
+		"--port-driver=none",
+		"--copy-up=/etc",
+		"--copy-up=/run",
+		"--copy-up=/var/lib",
+		"--propagation=rslave",
+		"--slirp4netns-sandbox=auto",
+		"--slirp4netns-seccomp=auto",
+		"--mtu=0",
+		"sh",
+		"-c",
+		"rm -rf /run/containerd ; sleep infinity")
+
+	// Start rootlesskit
+	// Don't put rootlessKitState as we are just starting rootlesskit, rootlessKitState won't contain child_pid
+	err := c.runContainerdProcess(cfg, "", args, filepath.Join(rootlessKitState, "api.sock"), nil, deferF)
+	if err != nil {
+		return "", err
+	}
+
+	return rootlessKitState, nil
+}
+
+func (c *containerd) runSnapshotterPlugin(config *string, cfg *BackendConfig, rootlessKitState string, deferF *multiCloser) error {
+	var argsGenerator func(string, string) []string
+	switch c.snapshotter {
+	case "stargz":
+		argsGenerator = func(snPath string, snRoot string) []string {
+			return []string{"containerd-stargz-grpc",
+				"--log-level", "debug",
+				"--address", snPath,
+				"--root", snRoot,
+			}
+		}
+	case "fuse-overlayfs":
+		argsGenerator = func(snPath string, snRoot string) []string {
+			return []string{"containerd-fuse-overlayfs-grpc", snPath, snRoot}
+		}
+	default:
+		// No plugin to run
+		return nil
+	}
+
+	snapshotterTmpDir, err := os.MkdirTemp("", fmt.Sprintf("bktest_containerd-%s-grpc", c.snapshotter))
+	if err != nil {
+		return err
+	}
+	deferF.append(func() error { return os.RemoveAll(snapshotterTmpDir) })
+
+	if err := os.Chown(snapshotterTmpDir, c.uid, c.gid); err != nil {
+		return err
+	}
+
+	snPath := filepath.Join(snapshotterTmpDir, "snapshotter.sock")
+	snRoot := filepath.Join(snapshotterTmpDir, "root")
+	*config = c.generateSnapshotterConfig(*config, snPath)
+
+	args := argsGenerator(snPath, snRoot)
+	if err := lookupBinary(args[0]); err != nil {
+		return err
+	}
+
+	err = c.runContainerdProcess(cfg, rootlessKitState, args, snPath, nil, deferF)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (c *containerd) generateSnapshotterConfig(config string, snPath string) string {
+	return fmt.Sprintf(`%s
+
+[proxy_plugins]
+	[proxy_plugins.%s]
+	type = "snapshot"
+	address = %q
+`, config, c.snapshotter, snPath)
+}
+
 func formatLogs(m map[string]*bytes.Buffer) string {
 	var ss []string
 	for k, b := range m {
@@ -238,4 +311,47 @@ func formatLogs(m map[string]*bytes.Buffer) string {
 		}
 	}
 	return strings.Join(ss, ",")
+}
+
+func (c *containerd) runContainerdProcess(cfg *BackendConfig, rootlessKitState string, args []string, unixSocketToWait string, extraEnv []string, deferF *multiCloser) error {
+	// If we are using rootlesskit, add arguments to run the process in rootless namespace
+	if rootlessKitState != "" {
+		var err error
+		args, err = addRootlessArgs(args, c.uid, rootlessKitState)
+		if err != nil {
+			return err
+		}
+	}
+
+	cmd := exec.Command(args[0], args[1:]...)
+	if len(extraEnv) > 0 {
+		cmd.Env = append(os.Environ(), extraEnv...)
+	}
+	snStop, err := startCmd(cmd, cfg.Logs)
+	if err != nil {
+		return err
+	}
+	if err := waitUnix(unixSocketToWait, 10*time.Second, cmd); err != nil {
+		snStop()
+		return errors.Wrapf(err, "%s did not start up: %s", cmd.Path, formatLogs(cfg.Logs))
+	}
+	deferF.append(snStop)
+
+	return nil
+}
+
+func addRootlessArgs(args []string, uid int, rootlessKitState string) ([]string, error) {
+	pidStr, err := os.ReadFile(filepath.Join(rootlessKitState, "child_pid"))
+	if err != nil {
+		return args, err
+	}
+	pid, err := strconv.ParseInt(string(pidStr), 10, 64)
+	if err != nil {
+		return args, err
+	}
+	args = append([]string{"sudo", "-u", fmt.Sprintf("#%d", uid), "-i", "--", "exec",
+		"nsenter", "-U", "--preserve-credentials", "-m", "-t", fmt.Sprintf("%d", pid)},
+		args...)
+
+	return args, nil
 }
