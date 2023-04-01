@@ -60,7 +60,7 @@ func (sr *immutableRef) tryComputeOverlayBlob(ctx context.Context, lower, upper 
 		}
 		// Close ensure compressorFunc does some finalization works.
 		defer compressed.Close()
-		if err := overlay.WriteUpperdir(ctx, io.MultiWriter(compressed, dgstr.Hash()), upperdir, lower); err != nil {
+		if err := overlay.WriteUpperdir(ctx, io.MultiWriter(compressed, dgstr.Hash()), sr.cm.Snapshotter.Name(), upperdir, lower); err != nil {
 			return emptyDesc, false, errors.Wrap(err, "failed to write compressed diff")
 		}
 		if err := compressed.Close(); err != nil {
@@ -71,7 +71,7 @@ func (sr *immutableRef) tryComputeOverlayBlob(ctx context.Context, lower, upper 
 		}
 		labels[containerdUncompressed] = dgstr.Digest().String()
 	} else {
-		if err = overlay.WriteUpperdir(ctx, bufW, upperdir, lower); err != nil {
+		if err = overlay.WriteUpperdir(ctx, bufW, sr.cm.Snapshotter.Name(), upperdir, lower); err != nil {
 			return emptyDesc, false, errors.Wrap(err, "failed to write diff")
 		}
 	}

@@ -111,15 +111,21 @@ func GetOverlayLayers(m mount.Mount) ([]string, error) {
 
 // WriteUpperdir writes a layer tar archive into the specified writer, based on
 // the diff information stored in the upperdir.
-func WriteUpperdir(ctx context.Context, w io.Writer, upperdir string, lower []mount.Mount) error {
+func WriteUpperdir(ctx context.Context, w io.Writer, snapshotterName string, upperdir string, lower []mount.Mount) error {
 	emptyLower, err := os.MkdirTemp("", "buildkit") // empty directory used for the lower of diff view
 	if err != nil {
 		return errors.Wrapf(err, "failed to create temp dir")
 	}
 	defer os.Remove(emptyLower)
+
+	mountType := "overlay"
+	if snapshotterName == "fuse-overlayfs" {
+		mountType = "fuse3.fuse-overlayfs"
+	}
+
 	upperView := []mount.Mount{
 		{
-			Type:    "overlay",
+			Type:    mountType,
 			Source:  "overlay",
 			Options: []string{fmt.Sprintf("lowerdir=%s", strings.Join([]string{upperdir, emptyLower}, ":"))},
 		},
