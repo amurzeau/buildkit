@@ -6714,6 +6714,9 @@ loop0:
 		if count == 0 {
 			break
 		}
+		// Sometimes, a saved trace is still in the content store
+		c.Prune(sb.Context(), nil, PruneAll)
+
 		if retries >= 50 {
 			require.FailNowf(t, "content still exists", "%+v", infos)
 		}
