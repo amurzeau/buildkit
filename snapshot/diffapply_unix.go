@@ -30,7 +30,7 @@ import (
 // that accounts for any hardlinks made from existing snapshots. ctx is expected to have a temporary lease
 // associated with it.
 func (sn *mergeSnapshotter) diffApply(ctx context.Context, dest Mountable, diffs ...Diff) (_ snapshots.Usage, rerr error) {
-	a, err := applierFor(dest, sn.tryCrossSnapshotLink, sn.userxattr)
+	a, err := applierFor(dest, sn.tryCrossSnapshotLink, sn.witheoutType)
 	if err != nil {
 		return snapshots.Usage{}, errors.Wrapf(err, "failed to create applier")
 	}
@@ -110,6 +110,18 @@ type change struct {
 	linkSubPath string
 }
 
+// opaqueWitheoutType is the type of whiteout to apply on an opaque directory
+type opaqueWitheoutType int
+
+const (
+	// Use trusted.opaque xattr
+	opaqueWitheoutTypeTrustedXattr opaqueWitheoutType = iota
+	// Use user.opaque xattr
+	opaqueWitheoutTypeUserXattr
+	// Use fuse-overlayfs whiteout file
+	opaqueWitheoutTypeFile
+)
+
 type changeApply struct {
 	*change
 	dstPath   string
@@ -138,14 +150,14 @@ type applier struct {
 	lowerdirs            []string // ordered highest -> lowest, the order we want to check them in
 	crossSnapshotLinks   map[inode]struct{}
 	createWhiteoutDelete bool
-	userxattr            bool
+	whiteoutType         opaqueWitheoutType
 	dirModTimes          map[string]unix.Timespec // map of dstPath -> mtime that should be set on that subPath
 }
 
-func applierFor(dest Mountable, tryCrossSnapshotLink, userxattr bool) (_ *applier, rerr error) {
+func applierFor(dest Mountable, tryCrossSnapshotLink bool, whiteoutType opaqueWitheoutType) (_ *applier, rerr error) {
 	a := &applier{
-		dirModTimes: make(map[string]unix.Timespec),
-		userxattr:   userxattr,
+		dirModTimes:  make(map[string]unix.Timespec),
+		whiteoutType: whiteoutType,
 	}
 	defer func() {
 		if rerr != nil {
@@ -258,7 +270,14 @@ func (a *applier) applyDelete(ctx context.Context, ca *changeApply) (bool, error
 	// delete the existing file at the path, if any. Don't delete when both are dirs
 	// in this case though because they should get merged, not overwritten.
 	deleteOnly := ca.kind == fs.ChangeKindDelete
-	overwrite := !deleteOnly && ca.dstStat != nil && ca.srcStat.Mode&ca.dstStat.Mode&unix.S_IFMT != unix.S_IFDIR
+	overwrite := false
+
+	if !deleteOnly {
+		var err error
+		if overwrite, err = a.checkOverwrite(ca); err != nil {
+			return false, err
+		}
+	}
 
 	if !deleteOnly && !overwrite {
 		// nothing to delete, continue on
@@ -293,19 +312,69 @@ func (a *applier) applyDelete(ctx context.Context, ca *changeApply) (bool, error
 			}
 		}
 		if foundLower {
-			ca.kind = fs.ChangeKindAdd
-			if ca.srcStat == nil {
-				ca.srcStat = &syscall.Stat_t{
-					Mode: syscall.S_IFCHR,
-					Rdev: unix.Mkdev(0, 0),
-				}
-				ca.srcPath = ""
-			}
-			return false, nil
+			return a.createWhiteoutFile(ca)
 		}
 	}
 
 	return deleteOnly, nil
+}
+
+func (a *applier) checkOverwrite(ca *changeApply) (overwrite bool, err error) {
+	// We are overwritting:
+	// - If destination exists and source and destination are not both directories
+	if ca.dstStat != nil && ca.srcStat.Mode&ca.dstStat.Mode&unix.S_IFMT != unix.S_IFDIR {
+		return true, nil
+	}
+	// - If they are both directories and the destination directory was deleted with a whiteout file
+	if a.createWhiteoutDelete {
+		dirpath := filepath.Dir(ca.dstPath)
+		fileName := filepath.Base(ca.dstPath)
+		withoutFilePath := filepath.Join(dirpath, overlay.OpaqueWitheoutFilePrefix+fileName)
+
+		if _, err := os.Lstat(withoutFilePath); err == nil {
+			// Remove the old whiteout file as we are replacing dstPath
+			if err := os.Remove(withoutFilePath); err != nil {
+				return false, errors.Wrap(err, "failed to remove whiteout during apply")
+			}
+			// Return overwrite: true to indicate we are overwriting a deleted file/directory
+			return true, nil
+		} else if !os.IsNotExist(err) {
+			return false, errors.Wrapf(err, "failed to lstat whiteout")
+		}
+	}
+
+	return false, nil
+}
+
+func (a *applier) createWhiteoutFile(ca *changeApply) (bool, error) {
+	ca.kind = fs.ChangeKindAdd
+
+	// No need to check if ca.srcStat is == nil
+	// This is always the case to properly handle the whiteout file creation
+
+	if a.whiteoutType == opaqueWitheoutTypeFile {
+		// Create a whiteout file instead of using a char 0/0 file
+		dirpath := filepath.Dir(ca.dstPath)
+		fileName := filepath.Base(ca.dstPath)
+
+		withoutFileName := overlay.OpaqueWitheoutFilePrefix + fileName
+		emptyFile, err := os.Create(filepath.Join(dirpath, withoutFileName))
+		if err != nil {
+			return false, errors.Wrapf(err, "failed to create whiteout for deleted file %s", ca.dstPath)
+		}
+		emptyFile.Close()
+
+		// The whiteout file is created, mark the file as processed
+		return true, nil
+	} else {
+		ca.srcStat = &syscall.Stat_t{
+			Mode: syscall.S_IFCHR,
+			Rdev: unix.Mkdev(0, 0),
+		}
+		ca.srcPath = ""
+	}
+
+	return false, nil
 }
 
 func (a *applier) applyHardlink(ctx context.Context, ca *changeApply) (bool, error) {
@@ -415,9 +484,8 @@ func (a *applier) applyCopy(ctx context.Context, ca *changeApply) error {
 
 	if ca.setOpaque {
 		// This is set in the case where we are creating a directory that is replacing a whiteout device
-		xattr := opaqueXattr(a.userxattr)
-		if err := sysx.LSetxattr(ca.dstPath, xattr, []byte{'y'}, 0); err != nil {
-			return errors.Wrapf(err, "failed to set opaque xattr %q of path %s", xattr, ca.dstPath)
+		if err := setDirectoryOpaque(a.whiteoutType, ca.dstPath); err != nil {
+			return err
 		}
 	}
 
@@ -794,10 +862,11 @@ func safeJoin(root, path string) (string, error) {
 const (
 	trustedOpaqueXattr = "trusted.overlay.opaque"
 	userOpaqueXattr    = "user.overlay.opaque"
+	fuseOpaqueXattr    = "user.fuseoverlayfs.opaque"
 )
 
 func isOpaqueXattr(s string) bool {
-	for _, k := range []string{trustedOpaqueXattr, userOpaqueXattr} {
+	for _, k := range []string{trustedOpaqueXattr, userOpaqueXattr, fuseOpaqueXattr} {
 		if s == k {
 			return true
 		}
@@ -805,11 +874,26 @@ func isOpaqueXattr(s string) bool {
 	return false
 }
 
-func opaqueXattr(userxattr bool) string {
-	if userxattr {
-		return userOpaqueXattr
+func setDirectoryOpaque(witheoutType opaqueWitheoutType, dstPath string) error {
+	if witheoutType == opaqueWitheoutTypeFile {
+		emptyFile, err := os.Create(filepath.Join(dstPath, overlay.OpaqueWitheoutFileName))
+		if err != nil {
+			return errors.Wrapf(err, "failed to create opaque whiteout file %q in path %s", overlay.OpaqueWitheoutFileName, dstPath)
+		}
+		emptyFile.Close()
+	} else {
+		xattr := trustedOpaqueXattr
+
+		if witheoutType == opaqueWitheoutTypeUserXattr {
+			xattr = userOpaqueXattr
+		}
+
+		if err := sysx.LSetxattr(dstPath, xattr, []byte{'y'}, 0); err != nil {
+			return errors.Wrapf(err, "failed to set opaque xattr %q of path %s", xattr, dstPath)
+		}
 	}
-	return trustedOpaqueXattr
+
+	return nil
 }
 
 // needsUserXAttr checks whether overlay mounts should be provided the userxattr option. We can't use
