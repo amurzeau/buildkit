@@ -23,6 +23,9 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+const OpaqueWitheoutFileName = ".wh..wh..opq"
+const OpaqueWitheoutFilePrefix = ".wh."
+
 // GetUpperdir parses the passed mounts and identifies the directory
 // that contains diff between upper and lower.
 func GetUpperdir(lower, upper []mount.Mount) (string, error) {
@@ -111,15 +114,21 @@ func GetOverlayLayers(m mount.Mount) ([]string, error) {
 
 // WriteUpperdir writes a layer tar archive into the specified writer, based on
 // the diff information stored in the upperdir.
-func WriteUpperdir(ctx context.Context, w io.Writer, upperdir string, lower []mount.Mount) error {
+func WriteUpperdir(ctx context.Context, w io.Writer, snapshotterName string, upperdir string, lower []mount.Mount) error {
 	emptyLower, err := os.MkdirTemp("", "buildkit") // empty directory used for the lower of diff view
 	if err != nil {
 		return errors.Wrapf(err, "failed to create temp dir")
 	}
 	defer os.Remove(emptyLower)
+
+	mountType := "overlay"
+	if snapshotterName == "fuse-overlayfs" {
+		mountType = "fuse3.fuse-overlayfs"
+	}
+
 	upperView := []mount.Mount{
 		{
-			Type:    "overlay",
+			Type:    mountType,
 			Source:  "overlay",
 			Options: []string{fmt.Sprintf("lowerdir=%s", strings.Join([]string{upperdir, emptyLower}, ":"))},
 		},
@@ -185,7 +194,7 @@ func Changes(ctx context.Context, changeFn fs.ChangeFunc, upperdir, upperdirView
 		}
 
 		// Check if this is a deleted entry
-		isDelete, skip, err := checkDelete(upperdir, path, base, f)
+		isDelete, skip, path, err := checkDelete(upperdir, path, base, f)
 		if err != nil {
 			return err
 		} else if skip {
@@ -197,8 +206,7 @@ func Changes(ctx context.Context, changeFn fs.ChangeFunc, upperdir, upperdirView
 		if isDelete {
 			// This is a deleted entry.
 			kind = fs.ChangeKindDelete
-			// Leave f set to the FileInfo for the whiteout device in case the caller wants it, e.g.
-			// the merge code uses it to hardlink in the whiteout device to merged snapshots
+			f = nil
 		} else if baseF, err := os.Lstat(filepath.Join(base, path)); err == nil {
 			// File exists in the base layer. Thus this is modified.
 			kind = fs.ChangeKindModify
@@ -243,48 +251,88 @@ func Changes(ctx context.Context, changeFn fs.ChangeFunc, upperdir, upperdirView
 }
 
 // checkDelete checks if the specified file is a whiteout
-func checkDelete(upperdir string, path string, base string, f os.FileInfo) (delete, skip bool, _ error) {
+func checkDelete(upperdir string, path string, base string, f os.FileInfo) (delete, skip bool, updatedPath string, _ error) {
+	var isWhiteout bool = false
+	var deletedPath = path
+
 	if f.Mode()&os.ModeCharDevice != 0 {
 		if _, ok := f.Sys().(*syscall.Stat_t); ok {
 			maj, min, err := devices.DeviceInfo(f)
 			if err != nil {
-				return false, false, errors.Wrapf(err, "failed to get device info")
+				return false, false, path, errors.Wrapf(err, "failed to get device info")
 			}
 			if maj == 0 && min == 0 {
 				// This file is a whiteout (char 0/0) that indicates this is deleted from the base
-				if _, err := os.Lstat(filepath.Join(base, path)); err != nil {
-					if !os.IsNotExist(err) {
-						return false, false, errors.Wrapf(err, "failed to lstat")
-					}
-					// This file doesn't exist even in the base dir.
-					// We don't need whiteout. Just skip this file.
-					return false, true, nil
-				}
-				return true, false, nil
+				isWhiteout = true
 			}
 		}
+	} else if filepath.Base(path) == OpaqueWitheoutFileName {
+		// whiteout file that indicate an opaque directory
+		// Ignore the file, it is handled within isOpaque()
+
+		return false, true, path, nil
+	} else if strings.HasPrefix(filepath.Base(path), OpaqueWitheoutFilePrefix) {
+		// whiteout file used by fuse-overlayfs when char 0/0 is not available
+		// (in rootless mode)
+		isWhiteout = true
+
+		// Remove the whiteout prefix to get the deleted file path
+		// For example ".wh.file" means "file" is deleted
+		dirpath := filepath.Dir(path)
+		basepath := filepath.Base(path)
+		deletedPath = filepath.Join(dirpath, strings.Replace(basepath, OpaqueWitheoutFilePrefix, "", 1))
 	}
-	return false, false, nil
+
+	if isWhiteout {
+		if _, err := os.Lstat(filepath.Join(base, deletedPath)); err != nil {
+			if !os.IsNotExist(err) {
+				return false, false, path, errors.Wrapf(err, "failed to lstat")
+			}
+			// This file doesn't exist even in the base dir.
+			// We don't need whiteout. Just skip this file.
+			return false, true, path, nil
+		}
+		return true, false, deletedPath, nil
+	}
+
+	return false, false, path, nil
 }
 
-// checkDelete checks if the specified file is an opaque directory
+// checkOpaque checks if the specified file is an opaque directory
 func checkOpaque(upperdir string, path string, base string, f os.FileInfo) (isOpaque bool, _ error) {
+	var isOpaqueDir = false
 	if f.IsDir() {
-		for _, oKey := range []string{"trusted.overlay.opaque", "user.overlay.opaque"} {
+		for _, oKey := range []string{"trusted.overlay.opaque", "user.overlay.opaque", "user.fuseoverlayfs.opaque"} {
 			opaque, err := sysx.LGetxattr(filepath.Join(upperdir, path), oKey)
 			if err != nil && err != unix.ENODATA {
 				return false, errors.Wrapf(err, "failed to retrieve %s attr", oKey)
 			} else if len(opaque) == 1 && opaque[0] == 'y' {
 				// This is an opaque whiteout directory.
-				if _, err := os.Lstat(filepath.Join(base, path)); err != nil {
-					if !os.IsNotExist(err) {
-						return false, errors.Wrapf(err, "failed to lstat")
-					}
-					// This file doesn't exist even in the base dir. We don't need treat this as an opaque.
-					return false, nil
-				}
-				return true, nil
+				isOpaqueDir = true
+				break
 			}
+		}
+
+		// Check if directory contains opaque whiteout file
+		if !isOpaqueDir {
+			whiteoutPath := filepath.Join(upperdir, path, OpaqueWitheoutFileName)
+			if _, err := os.Lstat(whiteoutPath); err == nil {
+				// An opaque whiteout file exist in the directory, so it is opaque
+				isOpaqueDir = true
+			} else if !os.IsNotExist(err) {
+				return false, errors.Wrapf(err, "failed to lstat opaque whiteout")
+			}
+		}
+
+		if isOpaqueDir {
+			if _, err := os.Lstat(filepath.Join(base, path)); err != nil {
+				if !os.IsNotExist(err) {
+					return false, errors.Wrapf(err, "failed to lstat")
+				}
+				// This file doesn't exist even in the base dir. We don't need treat this as an opaque.
+				return false, nil
+			}
+			return true, nil
 		}
 	}
 	return false, nil

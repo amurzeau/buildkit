@@ -17,15 +17,17 @@ import (
 // creating "hardlink farms" where non-directory objects are hard-linked into the merged tree
 // from their parent snapshots.
 var hardlinkMergeSnapshotters = map[string]struct{}{
-	"native":    {},
-	"overlayfs": {},
+	"native":         {},
+	"overlayfs":      {},
+	"fuse-overlayfs": {},
 }
 
 // overlayBasedSnapshotters are the names of snapshotter that use overlay mounts, which
 // enables optimizations such as skipping the base layer when doing a hardlink merge.
 var overlayBasedSnapshotters = map[string]struct{}{
-	"overlayfs": {},
-	"stargz":    {},
+	"overlayfs":      {},
+	"fuse-overlayfs": {},
+	"stargz":         {},
 }
 
 type Diff struct {
@@ -60,9 +62,8 @@ type mergeSnapshotter struct {
 	// Whether the optimization of preparing on top of base layers is supported (see Merge method).
 	skipBaseLayers bool
 
-	// Whether we should use the "user.*" namespace when writing overlay xattrs. If false,
-	// "trusted.*" is used instead.
-	userxattr bool
+	// Whether we should use the "user.*" or "trused.*" xattr namespace or file whiteouts.
+	witheoutType opaqueWitheoutType
 }
 
 func NewMergeSnapshotter(ctx context.Context, sn Snapshotter, lm leases.Manager) MergeSnapshotter {
@@ -71,23 +72,33 @@ func NewMergeSnapshotter(ctx context.Context, sn Snapshotter, lm leases.Manager)
 	_, overlayBased := overlayBasedSnapshotters[name]
 
 	skipBaseLayers := overlayBased // default to skipping base layer for overlay-based snapshotters
-	var userxattr bool
+	witheoutType := opaqueWitheoutTypeTrustedXattr
 	if overlayBased && userns.RunningInUserNS() {
 		// When using an overlay-based snapshotter, if we are running rootless on a pre-5.11
 		// kernel, we will not have userxattr. This results in opaque xattrs not being visible
 		// to us and thus breaking the overlay-optimized differ.
-		var err error
-		userxattr, err = needsUserXAttr(ctx, sn, lm)
-		if err != nil {
-			bklog.G(ctx).Debugf("failed to check user xattr: %v", err)
-			tryCrossSnapshotLink = false
-			skipBaseLayers = false
+		if name == "fuse-overlayfs" {
+			witheoutType = opaqueWitheoutTypeFile
 		} else {
-			tryCrossSnapshotLink = tryCrossSnapshotLink && userxattr
-			// Disable skipping base layers when in pre-5.11 rootless mode. Skipping the base layers
-			// necessitates the ability to set opaque xattrs sometimes, which only works in 5.11+
-			// kernels that support userxattr.
-			skipBaseLayers = userxattr
+			userxattr, err := needsUserXAttr(ctx, sn, lm)
+
+			if userxattr {
+				witheoutType = opaqueWitheoutTypeUserXattr
+			} else {
+				witheoutType = opaqueWitheoutTypeTrustedXattr
+			}
+
+			if err != nil {
+				bklog.G(ctx).Debugf("failed to check user xattr: %v", err)
+				tryCrossSnapshotLink = false
+				skipBaseLayers = false
+			} else {
+				tryCrossSnapshotLink = tryCrossSnapshotLink && userxattr
+				// Disable skipping base layers when in pre-5.11 rootless mode. Skipping the base layers
+				// necessitates the ability to set opaque xattrs sometimes, which only works in 5.11+
+				// kernels that support userxattr.
+				skipBaseLayers = userxattr
+			}
 		}
 	}
 
@@ -96,7 +107,7 @@ func NewMergeSnapshotter(ctx context.Context, sn Snapshotter, lm leases.Manager)
 		lm:                   lm,
 		tryCrossSnapshotLink: tryCrossSnapshotLink,
 		skipBaseLayers:       skipBaseLayers,
-		userxattr:            userxattr,
+		witheoutType:         witheoutType,
 	}
 }
 

@@ -1673,7 +1673,8 @@ func (sm *sharableMountable) Mount() (_ []mount.Mount, _ func() error, retErr er
 		}()
 		var isOverlay bool
 		for _, m := range mounts {
-			if overlay.IsOverlayMountType(m) {
+			// fuse based mounts can't be mounted by all executors (runc doesn't support it)
+			if overlay.IsOverlayMountType(m) || strings.HasPrefix(m.Type, "fuse3") {
 				isOverlay = true
 				break
 			}
