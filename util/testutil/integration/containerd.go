@@ -62,6 +62,14 @@ func InitContainerdWorker() {
 				gid:         gid,
 				snapshotter: "fuse-overlayfs",
 			})
+			Register(&containerd{
+				name:        "containerd-rootless-snapshotter-fuse-overlayfs-disable-ovl-whiteout",
+				containerd:  "containerd",
+				uid:         uid,
+				gid:         gid,
+				snapshotter: "fuse-overlayfs",
+				extraEnv: []string{"FUSE_OVERLAYFS_DISABLE_OVL_WHITEOUT=1"},
+			})
 		}
 	}
 
