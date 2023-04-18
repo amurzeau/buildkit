@@ -176,6 +176,8 @@ func (c *Controller) Prune(req *controlapi.PruneRequest, stream controlapi.Contr
 		return errors.Wrap(err, "failed to list workers for prune")
 	}
 
+	bklog.G(ctx).Debugf("contentstore: prunning")
+
 	didPrune := false
 	defer func() {
 		if didPrune {
@@ -192,6 +194,7 @@ func (c *Controller) Prune(req *controlapi.PruneRequest, stream controlapi.Contr
 	for _, w := range workers {
 		func(w worker.Worker) {
 			eg.Go(func() error {
+				bklog.G(ctx).Debugf("contentstore: pruning worker %s", w.ID())
 				return w.Prune(ctx, ch, client.PruneInfo{
 					Filter:       req.Filter,
 					All:          req.All,

@@ -6545,6 +6545,7 @@ func checkAllReleasable(t *testing.T, c *Client, sb integration.Sandbox, checkCo
 		if err == io.EOF {
 			break
 		}
+		t.Logf("contentstore: recv build history: %+v", resp)
 		require.NoError(t, err)
 		_, err = c.ControlClient().UpdateBuildHistory(sb.Context(), &controlapi.UpdateBuildHistoryRequest{
 			Ref:    resp.Record.Ref,
@@ -6627,7 +6628,7 @@ loop0:
 			break
 		}
 		// Sometimes, a saved trace is still in the content store
-		c.Prune(sb.Context(), nil, PruneAll)
+		//c.Prune(sb.Context(), nil, PruneAll)
 
 		if retries >= 50 {
 			require.FailNowf(t, "content still exists", "%+v", infos)

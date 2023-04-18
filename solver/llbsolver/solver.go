@@ -359,6 +359,7 @@ func (s *Solver) recordBuildHistory(ctx context.Context, id string, req frontend
 			}
 
 			if err := func() error {
+				bklog.G(ctx).Errorf("contentstore: starting saving trace for %s", id)
 				w, err := s.history.OpenBlobWriter(context.TODO(), "application/vnd.buildkit.otlp.json.v0")
 				if err != nil {
 					return err
@@ -376,6 +377,7 @@ func (s *Solver) recordBuildHistory(ctx context.Context, id string, req frontend
 					return err
 				}
 				defer release()
+				bklog.G(ctx).Errorf("contentstore: saving trace for %s: %+v", id, desc.Digest)
 
 				if err := s.history.UpdateRef(context.TODO(), id, func(rec *controlapi.BuildHistoryRecord) error {
 					rec.Trace = &controlapi.Descriptor{
