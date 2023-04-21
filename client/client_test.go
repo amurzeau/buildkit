@@ -6636,6 +6636,18 @@ loop0:
 		//c.Prune(sb.Context(), nil, PruneAll)
 
 		if retries >= 50 {
+			for _, info := range infos {
+				t.Logf("content: %v %v %+v", info.Digest, info.Size, info.Labels)
+				ra, err := client.ContentStore().ReaderAt(ctx, ocispecs.Descriptor{
+					Digest: info.Digest,
+					Size:   info.Size,
+				})
+				if err == nil {
+					dt := make([]byte, 1024)
+					n, err := ra.ReadAt(dt, 0)
+					t.Logf("data: %+v %q", err, string(dt[:n]))
+				}
+			}
 			require.FailNowf(t, "content still exists", "%+v", infos)
 		}
 		retries++

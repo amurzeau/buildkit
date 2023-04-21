@@ -165,6 +165,7 @@ func (s *Solver) recordBuildHistory(ctx context.Context, id string, req frontend
 		}}
 	}
 
+	bklog.G(ctx).Debugf("contentstore: starting history event for %s", id)
 	if err := s.history.Update(ctx, &controlapi.BuildHistoryEvent{
 		Type:   controlapi.BuildHistoryEventType_STARTED,
 		Record: rec,
@@ -177,6 +178,9 @@ func (s *Solver) recordBuildHistory(ctx context.Context, id string, req frontend
 		rec.CompletedAt = &en
 
 		j.CloseProgress()
+
+		bklog.G(ctx).Debugf("contentstore: starting saving trace closeProgress %s: %+v", id,
+			errors.WithStack(cache.ErrLocked))
 
 		if res != nil && len(res.Metadata) > 0 {
 			rec.ExporterResponse = map[string]string{}
@@ -359,7 +363,7 @@ func (s *Solver) recordBuildHistory(ctx context.Context, id string, req frontend
 			}
 
 			if err := func() error {
-				bklog.G(ctx).Errorf("contentstore: starting saving trace for %s", id)
+				bklog.G(ctx).Debugf("contentstore: starting saving trace for %s", id)
 				w, err := s.history.OpenBlobWriter(context.TODO(), "application/vnd.buildkit.otlp.json.v0")
 				if err != nil {
 					return err
@@ -377,7 +381,7 @@ func (s *Solver) recordBuildHistory(ctx context.Context, id string, req frontend
 					return err
 				}
 				defer release()
-				bklog.G(ctx).Errorf("contentstore: saving trace for %s: %+v", id, desc.Digest)
+				bklog.G(ctx).Debugf("contentstore: saving trace for %s: %+v", id, desc.Digest)
 
 				if err := s.history.UpdateRef(context.TODO(), id, func(rec *controlapi.BuildHistoryRecord) error {
 					rec.Trace = &controlapi.Descriptor{
@@ -387,7 +391,7 @@ func (s *Solver) recordBuildHistory(ctx context.Context, id string, req frontend
 					}
 					return nil
 				}); err != nil {
-					return err
+					return errors.WithStack(err)
 				}
 				return nil
 			}(); err != nil {
