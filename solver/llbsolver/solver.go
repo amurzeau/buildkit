@@ -179,6 +179,7 @@ func (s *Solver) recordBuildHistory(ctx context.Context, id string, req frontend
 
 		j.CloseProgress()
 
+		bklog.G(ctx).Debugf("contentstore: starting saving trace solveRequest: %s: %+v", id, req)
 		bklog.G(ctx).Debugf("contentstore: starting saving trace closeProgress %s: %+v", id,
 			errors.WithStack(cache.ErrLocked))
 
