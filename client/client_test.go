@@ -6545,7 +6545,7 @@ func checkAllReleasable(t *testing.T, c *Client, sb integration.Sandbox, checkCo
 		if err == io.EOF {
 			break
 		}
-		t.Logf("%s: contentstore: recv build history: %+v", t.Name(), resp)
+		t.Logf("time=\"%s\" %s: contentstore: recv build history: %+v", time.Now().Format(time.RFC3339Nano), t.Name(), resp)
 		require.NoError(t, err)
 		_, err = c.ControlClient().UpdateBuildHistory(sb.Context(), &controlapi.UpdateBuildHistoryRequest{
 			Ref:    resp.Record.Ref,
@@ -6554,7 +6554,7 @@ func checkAllReleasable(t *testing.T, c *Client, sb integration.Sandbox, checkCo
 		require.NoError(t, err)
 	}
 
-	t.Logf("%s: contentstore: recv build history ended", t.Name())
+	t.Logf("time=\"%s\" %s: contentstore: recv build history ended", time.Now().Format(time.RFC3339Nano), t.Name())
 
 	retries := 0
 loop0:
@@ -6563,9 +6563,9 @@ loop0:
 		retries++
 		du, err := c.DiskUsage(sb.Context())
 		require.NoError(t, err)
-		t.Logf("%s: contentstore: disk usage start", t.Name())
+		t.Logf("time=\"%s\" %s: contentstore: disk usage start", time.Now().Format(time.RFC3339Nano), t.Name())
 		for _, d := range du {
-			t.Logf("%s: contentstore: disk usage: %+v", t.Name(), d)
+			t.Logf("time=\"%s\" %s: contentstore: disk usage: %+v", time.Now().Format(time.RFC3339Nano), t.Name(), d)
 			if d.InUse {
 				time.Sleep(500 * time.Millisecond)
 				continue loop0
@@ -6574,7 +6574,7 @@ loop0:
 		break
 	}
 
-	t.Logf("%s: contentstore: prune from client_test", t.Name())
+	t.Logf("time=\"%s\" %s: contentstore: prune from client_test", time.Now().Format(time.RFC3339Nano), t.Name())
 	err = c.Prune(sb.Context(), nil, PruneAll)
 	require.NoError(t, err)
 
