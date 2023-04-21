@@ -16,6 +16,7 @@ import (
 	controlapi "github.com/moby/buildkit/api/services/control"
 	"github.com/moby/buildkit/client"
 	"github.com/moby/buildkit/cmd/buildkitd/config"
+	"github.com/moby/buildkit/util/bklog"
 	"github.com/moby/buildkit/util/leaseutil"
 	digest "github.com/opencontainers/go-digest"
 	ocispecs "github.com/opencontainers/image-spec/specs-go/v1"
@@ -535,6 +536,8 @@ func (h *HistoryQueue) Listen(ctx context.Context, req *controlapi.BuildHistoryR
 	sub := h.ps.Subscribe()
 	defer sub.close()
 
+	bklog.G(ctx).Debugf("contentstore: listen history %+v", req)
+
 	if req.Ref != "" {
 		if _, ok := h.deleted[req.Ref]; ok {
 			h.mu.Unlock()
@@ -559,6 +562,7 @@ func (h *HistoryQueue) Listen(ctx context.Context, req *controlapi.BuildHistoryR
 		if req.Ref != "" && e.Ref != req.Ref {
 			continue
 		}
+		bklog.G(ctx).Debugf("contentstore: iterating history %+v", e)
 		sub.ps.Send(&controlapi.BuildHistoryEvent{
 			Type:   controlapi.BuildHistoryEventType_STARTED,
 			Record: e,
@@ -581,6 +585,7 @@ func (h *HistoryQueue) Listen(ctx context.Context, req *controlapi.BuildHistoryR
 				if err := br.Unmarshal(dt); err != nil {
 					return errors.Wrapf(err, "failed to unmarshal build record %s", key)
 				}
+				bklog.G(ctx).Debugf("contentstore: listen: sending history %+v", br)
 				if err := f(&controlapi.BuildHistoryEvent{
 					Record: &br,
 					Type:   controlapi.BuildHistoryEventType_COMPLETE,
