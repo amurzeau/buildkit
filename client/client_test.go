@@ -6554,6 +6554,8 @@ func checkAllReleasable(t *testing.T, c *Client, sb integration.Sandbox, checkCo
 		require.NoError(t, err)
 	}
 
+	t.Logf("contentstore: recv build history ended")
+
 	retries := 0
 loop0:
 	for {
@@ -6561,7 +6563,9 @@ loop0:
 		retries++
 		du, err := c.DiskUsage(sb.Context())
 		require.NoError(t, err)
+		t.Logf("contentstore: disk usage start")
 		for _, d := range du {
+			t.Logf("contentstore: disk usage: %+v", d)
 			if d.InUse {
 				time.Sleep(500 * time.Millisecond)
 				continue loop0
@@ -6570,6 +6574,7 @@ loop0:
 		break
 	}
 
+	t.Logf("contentstore: prune from client_test")
 	err = c.Prune(sb.Context(), nil, PruneAll)
 	require.NoError(t, err)
 
