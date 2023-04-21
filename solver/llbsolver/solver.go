@@ -356,6 +356,7 @@ func (s *Solver) recordBuildHistory(ctx context.Context, id string, req frontend
 			return err
 		}
 		go func() {
+			bklog.G(ctx).Debugf("contentstore: start waiting 3s %s", id)
 			time.Sleep(3 * time.Second)
 			spans := stopTrace()
 

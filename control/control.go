@@ -212,6 +212,10 @@ func (c *Controller) Prune(req *controlapi.PruneRequest, stream controlapi.Contr
 		return eg.Wait()
 	})
 
+	defer func() {
+		bklog.G(ctx).Debugf("contentstore: pruning ended")
+	}()
+
 	eg2.Go(func() error {
 		for r := range ch {
 			didPrune = true
