@@ -6545,7 +6545,7 @@ func checkAllReleasable(t *testing.T, c *Client, sb integration.Sandbox, checkCo
 		if err == io.EOF {
 			break
 		}
-		t.Logf("contentstore: recv build history: %+v", resp)
+		t.Logf("%s: contentstore: recv build history: %+v", t.Name(), resp)
 		require.NoError(t, err)
 		_, err = c.ControlClient().UpdateBuildHistory(sb.Context(), &controlapi.UpdateBuildHistoryRequest{
 			Ref:    resp.Record.Ref,
@@ -6554,7 +6554,7 @@ func checkAllReleasable(t *testing.T, c *Client, sb integration.Sandbox, checkCo
 		require.NoError(t, err)
 	}
 
-	t.Logf("contentstore: recv build history ended")
+	t.Logf("%s: contentstore: recv build history ended", t.Name())
 
 	retries := 0
 loop0:
@@ -6563,9 +6563,9 @@ loop0:
 		retries++
 		du, err := c.DiskUsage(sb.Context())
 		require.NoError(t, err)
-		t.Logf("contentstore: disk usage start")
+		t.Logf("%s: contentstore: disk usage start", t.Name())
 		for _, d := range du {
-			t.Logf("contentstore: disk usage: %+v", d)
+			t.Logf("%s: contentstore: disk usage: %+v", t.Name(), d)
 			if d.InUse {
 				time.Sleep(500 * time.Millisecond)
 				continue loop0
@@ -6574,7 +6574,7 @@ loop0:
 		break
 	}
 
-	t.Logf("contentstore: prune from client_test")
+	t.Logf("%s: contentstore: prune from client_test", t.Name())
 	err = c.Prune(sb.Context(), nil, PruneAll)
 	require.NoError(t, err)
 
@@ -6637,7 +6637,7 @@ loop0:
 
 		if retries >= 50 {
 			for _, info := range infos {
-				t.Logf("content: %v %v %+v", info.Digest, info.Size, info.Labels)
+				t.Logf("%s: content: %v %v %+v", t.Name(), info.Digest, info.Size, info.Labels)
 				ra, err := client.ContentStore().ReaderAt(ctx, ocispecs.Descriptor{
 					Digest: info.Digest,
 					Size:   info.Size,
@@ -6645,7 +6645,7 @@ loop0:
 				if err == nil {
 					dt := make([]byte, 1024)
 					n, err := ra.ReadAt(dt, 0)
-					t.Logf("data: %+v %q", err, string(dt[:n]))
+					t.Logf("%s: data: %+v %q", t.Name(), err, string(dt[:n]))
 				}
 			}
 			require.FailNowf(t, "content still exists", "%+v", infos)
