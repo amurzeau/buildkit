@@ -80,11 +80,14 @@ func startCmd(cmd *exec.Cmd, logs map[string]*bytes.Buffer) (func() error, error
 }
 
 func setCmdLogs(cmd *exec.Cmd, logs map[string]*bytes.Buffer) {
-	b := new(bytes.Buffer)
-	logs["stdout: "+cmd.String()] = b
+	b, exists := logs["all logs"]
+	if !exists {
+		b = new(bytes.Buffer)
+		logs["all logs"] = b
+	}
 	cmd.Stdout = &lockingWriter{Writer: b}
-	b = new(bytes.Buffer)
-	logs["stderr: "+cmd.String()] = b
+	// b = new(bytes.Buffer)
+	// logs["stderr: "+cmd.String()] = b
 	cmd.Stderr = &lockingWriter{Writer: b}
 }
 

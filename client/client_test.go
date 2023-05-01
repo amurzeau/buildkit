@@ -6619,12 +6619,14 @@ loop0:
 		return
 	}
 
+	t.Logf("time=\"%s\" %s: contentstore: start checking content store", time.Now().Format(time.RFC3339Nano), t.Name())
 	retries = 0
 	for {
 		count := 0
 		var infos []content.Info
 		err = client.ContentStore().Walk(ctx, func(info content.Info) error {
 			count++
+			t.Logf("time=\"%s\" %s: contentstore: content store contains %+v", time.Now().Format(time.RFC3339Nano), t.Name(), info)
 			infos = append(infos, info)
 			return nil
 		})
@@ -6653,6 +6655,8 @@ loop0:
 		retries++
 		time.Sleep(500 * time.Millisecond)
 	}
+	t.Logf("time=\"%s\" %s: contentstore: content store is empty", time.Now().Format(time.RFC3339Nano), t.Name())
+
 }
 
 func testInvalidExporter(t *testing.T, sb integration.Sandbox) {

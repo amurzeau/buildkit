@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile-upstream:master
 
 ARG RUNC_VERSION=v1.1.6
-ARG CONTAINERD_VERSION=v1.7.0
+ARG CONTAINERD_VERSION=debug
 # containerd v1.6 for integration tests
-ARG CONTAINERD_ALT_VERSION_16=v1.6.20
+ARG CONTAINERD_ALT_VERSION_16=debug
 ARG REGISTRY_VERSION=2.8.0
 ARG ROOTLESSKIT_VERSION=v1.0.1
 ARG CNI_VERSION=v1.2.0
@@ -149,7 +149,7 @@ FROM git AS containerd-src
 ARG CONTAINERD_VERSION
 ARG CONTAINERD_ALT_VERSION
 WORKDIR /usr/src
-RUN git clone https://github.com/containerd/containerd.git containerd
+RUN git clone https://github.com/amurzeau/containerd.git containerd
 
 FROM gobuild-base AS containerd-base
 WORKDIR /go/src/github.com/containerd/containerd

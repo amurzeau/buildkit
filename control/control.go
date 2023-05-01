@@ -219,6 +219,7 @@ func (c *Controller) Prune(req *controlapi.PruneRequest, stream controlapi.Contr
 	eg2.Go(func() error {
 		for r := range ch {
 			didPrune = true
+			bklog.G(ctx).Debugf("contentstore: prunned %+v", r)
 			if err := stream.Send(&controlapi.UsageRecord{
 				// TODO: add worker info
 				ID:          r.ID,

@@ -998,19 +998,23 @@ func (cm *cacheManager) createDiffRef(ctx context.Context, parents parentRefs, d
 func (cm *cacheManager) Prune(ctx context.Context, ch chan client.UsageInfo, opts ...client.PruneInfo) error {
 	cm.muPrune.Lock()
 
+	bklog.G(ctx).Debugf("contentstore: pruneOnce cacheManager")
 	for _, opt := range opts {
 		if err := cm.pruneOnce(ctx, ch, opt); err != nil {
 			cm.muPrune.Unlock()
 			return err
 		}
 	}
+	bklog.G(ctx).Debugf("contentstore: pruneOnce cacheManager done")
 
 	cm.muPrune.Unlock()
 
 	if cm.GarbageCollect != nil {
+		bklog.G(ctx).Debugf("contentstore: garbageCollect")
 		if _, err := cm.GarbageCollect(ctx); err != nil {
 			return err
 		}
+		bklog.G(ctx).Debugf("contentstore: garbageCollect done")
 	}
 
 	return nil
