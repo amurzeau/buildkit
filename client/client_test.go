@@ -6636,6 +6636,7 @@ loop0:
 			break
 		}
 		// Sometimes, a saved trace is still in the content store
+		t.Logf("checkAllReleasable: garbageCollectContainerd")
 		garbageCollectContainerd(ctx, client)
 
 		if retries >= 50 {
