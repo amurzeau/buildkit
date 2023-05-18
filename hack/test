@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 . $(dirname $0)/util
-set -eu -o pipefail
+set -eux -o pipefail
 
 : ${HTTP_PROXY=}
 : ${HTTPS_PROXY=}
